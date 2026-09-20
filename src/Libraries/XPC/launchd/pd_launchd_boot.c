@@ -160,11 +160,52 @@ pd_launchd_boot_fix_launchdaemons_ownership(void)
 			dir, fixed);
 }
 
+/* /var/empty -- sshd's real privilege-separation chroot directory
+ * (_PATH_PRIVSEP_CHROOT_DIR). Exactly the same root cause, and exactly
+ * the same fix, as the LaunchDaemons ownership normalization above:
+ * tools/init_binary/inject_into_sd_image.sh creates the directory
+ * without sudo, so its real on-disk owner is the host build uid rather
+ * than root, and real, unmodified upstream OpenSSH refuses to start --
+ * sshd.c's privsep_preauth() -> misc.c safe_path() prints
+ * "/var/empty must be owned by root and not group or world-writable."
+ * and exits 255. Reproduced for real in
+ * qemu/dar183_sshd_boot_test.log before this was added (DAR-183).
+ *
+ * That check is real OpenSSH security policy and correct -- the privsep
+ * child chroots there, so a directory any non-root user can write to
+ * would defeat the whole point. As with the plists, the bug is upstream
+ * of it in how this port's tooling populates the image, and PID 1 is
+ * already root with "/" writable by the time it gets here. Silent when
+ * the directory does not exist (an image built without sshd installed);
+ * launchd itself has no other relationship with sshd, which is
+ * deliberately NOT a launchd job here (DAR-183). */
+static void
+pd_launchd_boot_fix_privsep_dir(void)
+{
+	static const char dir[] = "/var/empty";
+	struct stat sb;
+
+	if (stat(dir, &sb) < 0) {
+		return;
+	}
+	pd_launchd_boot_chown_root(dir);
+	if ((sb.st_mode & (S_IWGRP | S_IWOTH)) != 0 && chmod(dir, 0755) < 0) {
+		launchd_syslog(LOG_ERR | LOG_CONSOLE,
+				"pd_launchd_boot: chmod(%s, 0755) failed: %s",
+				dir, strerror(errno));
+		return;
+	}
+	launchd_syslog(LOG_NOTICE | LOG_CONSOLE,
+			"pd_launchd_boot: normalized %s to root:wheel, mode 0755 "
+			"(DAR-183, sshd privilege-separation chroot dir)", dir);
+}
+
 void
 pd_launchd_boot(void)
 {
 	pd_launchd_boot_remount_root_rw();
 	pd_launchd_boot_fix_launchdaemons_ownership();
+	pd_launchd_boot_fix_privsep_dir();
 	pd_launchd_boot_mkdir_p("/dev", 0755);
 	pd_launchd_boot_try_mount("devfs", "/dev", 0, NULL);
 }

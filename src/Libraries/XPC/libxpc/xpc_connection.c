@@ -89,10 +89,23 @@ xpc_connection_create(const char *name, dispatch_queue_t targetq)
 	 * queue, which the blocked main thread could never drain, so syslogd
 	 * never reached its MIG server.
 	 *
-	 * A private serial queue targeting the default-priority global queue
-	 * keeps real XPC's guarantee that one connection's handler calls are
-	 * serialized, which dispatching straight onto the concurrent global
-	 * queue would not.
+	 * A private serial queue keeps real XPC's guarantee that one
+	 * connection's handler calls are serialized.
+	 *
+	 * DAR-406: it must keep libdispatch's own default target -- "Serial
+	 * queues default to overcommit!" (third_party/libdispatch/src/queue.c,
+	 * _dispatch_lane_create_with_target) -- which is also what
+	 * DISPATCH_TARGET_QUEUE_DEFAULT resolves to for a serial queue. An
+	 * earlier version explicitly retargeted it to
+	 * dispatch_get_global_queue(DEFAULT, 0), the NON-overcommit root. This
+	 * port's libdispatch uses its internal thread pool
+	 * (DISPATCH_USE_INTERNAL_WORKQUEUE), which caps a non-overcommit root
+	 * at hw.activecpu threads and has no stall monitor off Linux
+	 * (src/event/workqueue_internal.h). syslogd parks database_server() on
+	 * that very root queue forever (syslogd.c:727), so the connection
+	 * handler for asl_trigger_aslmanager()'s XPC_ERROR_CONNECTION_INVALID
+	 * reply never got a thread: asl_action_queue blocked in the _sync call
+	 * and syslogd never wrote another log line after its first checkpoint.
 	 */
 	if (targetq != NULL) {
 		conn->xc_target_queue = targetq;
@@ -100,8 +113,6 @@ xpc_connection_create(const char *name, dispatch_queue_t targetq)
 		asprintf(&qname, "com.ixsystems.xpc.connection.targetq.%p", conn);
 		conn->xc_target_queue = dispatch_queue_create(qname, NULL);
 		free(qname);
-		dispatch_set_target_queue(conn->xc_target_queue,
-		    dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
 	}
 
 	/* Receive queue is initially suspended */

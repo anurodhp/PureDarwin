@@ -73,8 +73,36 @@ xpc_connection_create(const char *name, dispatch_queue_t targetq)
 	conn->xc_recv_queue = dispatch_queue_create(qname, NULL);
 	free(qname);
 
-	/* Create target queue */
-	conn->xc_target_queue = targetq ? targetq : dispatch_get_main_queue();
+	/*
+	 * Create target queue.
+	 *
+	 * DAR-310: a NULL targetq used to mean dispatch_get_main_queue().
+	 * Real XPC documents NULL as "libdispatch's default target queue,
+	 * defined as DISPATCH_TARGET_QUEUE_DEFAULT" (SDK xpc/connection.h,
+	 * xpc_connection_create() and xpc_connection_create_mach_service()),
+	 * not the main queue. The difference is a deadlock for any caller
+	 * that blocks its main thread in a _sync call before dispatch_main():
+	 * syslogd's asl_trigger_aslmanager() (syslog-385 asl_util.c) calls
+	 * xpc_connection_send_message_with_reply_sync() on a NULL-queue
+	 * connection from main() during init_modules(). With no aslmanager,
+	 * the XPC_ERROR_CONNECTION_INVALID reply was queued to the main
+	 * queue, which the blocked main thread could never drain, so syslogd
+	 * never reached its MIG server.
+	 *
+	 * A private serial queue targeting the default-priority global queue
+	 * keeps real XPC's guarantee that one connection's handler calls are
+	 * serialized, which dispatching straight onto the concurrent global
+	 * queue would not.
+	 */
+	if (targetq != NULL) {
+		conn->xc_target_queue = targetq;
+	} else {
+		asprintf(&qname, "com.ixsystems.xpc.connection.targetq.%p", conn);
+		conn->xc_target_queue = dispatch_queue_create(qname, NULL);
+		free(qname);
+		dispatch_set_target_queue(conn->xc_target_queue,
+		    dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+	}
 
 	/* Receive queue is initially suspended */
 	dispatch_suspend(conn->xc_recv_queue);

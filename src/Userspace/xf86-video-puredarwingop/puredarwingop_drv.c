@@ -474,7 +474,15 @@ typedef uint32_t PDGOPVec __attribute__((vector_size(16), aligned(16)));
  * Device-memory mapping (VRAMCacheMode "default"/"inhibit"/"posted"), where
  * an unaligned access faults; and on a write-combine mapping the aligned
  * 16-byte stores fill whole write-buffer lines. Pixels are 32-bit, so dst,
- * src and bytes are multiples of 4. */
+ * src and bytes are multiples of 4.
+ *
+ * The 16-byte loads use __builtin_memcpy, not memcpy: the X server and its
+ * modules are built with -fno-builtin (iokit build_xserver.sh), which turned
+ * each memcpy(&a, src, 16) into a real call through a stack temporary --
+ * about 216,000 calls per 1280x720 update. Measured on a Pi 3: the update
+ * took ~32 ms (~105 MB/s, ShadowStats) while the same loop with the loads
+ * inlined writes the VRAM at ~1.1 GB/s (3.35 ms per frame, fb_bench).
+ * __builtin_memcpy is expanded inline whatever -fno-builtin says. */
 static void
 PDGOPCopyRun(CARD8 *dst, const CARD8 *src, size_t bytes)
 {
@@ -484,10 +492,10 @@ PDGOPCopyRun(CARD8 *dst, const CARD8 *src, size_t bytes)
     }
     while (bytes >= 64) {
         PDGOPVec a, b, c, d;
-        memcpy(&a, src, 16);
-        memcpy(&b, src + 16, 16);
-        memcpy(&c, src + 32, 16);
-        memcpy(&d, src + 48, 16);
+        __builtin_memcpy(&a, src, 16);
+        __builtin_memcpy(&b, src + 16, 16);
+        __builtin_memcpy(&c, src + 32, 16);
+        __builtin_memcpy(&d, src + 48, 16);
         ((volatile PDGOPVec *)dst)[0] = a;
         ((volatile PDGOPVec *)dst)[1] = b;
         ((volatile PDGOPVec *)dst)[2] = c;

@@ -1,5 +1,7 @@
 #include <sys/stat.h>
 #include <sys/mount.h>
+#include <sys/wait.h>
+#include <spawn.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -301,6 +303,55 @@ pd_launchd_boot_clean_tmp_dirs(void)
 			"are root:wheel 01777 (DAR-411)");
 }
 
+/*
+ * /etc/sysctl.conf. Apple's system bootstrapper applies it with
+ * apply_sysctls_from_file("/etc/sysctl.conf") (launchctl/launchctl.c:2312):
+ * every non-blank line not starting with '#' (after leading space) becomes
+ * `sysctl -w <line>`, run through fwexec() = posix_spawnp + wait
+ * (:4524-4560). That bootstrapper does not run on this port (see the
+ * comment above pd_launchd_boot_clean_tmp_dirs), so the step is done here,
+ * the same way. First user: the SysV shared-memory limits MIT-SHM needs
+ * (the iokit project's inject_into_sd_image.sh writes the file).
+ */
+extern char **environ;
+
+static void
+pd_launchd_boot_apply_sysctls(const char *file)
+{
+	FILE *sf = fopen(file, "r");
+	if (sf == NULL) {
+		return;
+	}
+	char line[512];
+	unsigned applied = 0, failed = 0;
+	while (fgets(line, sizeof(line), sf) != NULL) {
+		size_t n = strlen(line);
+		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) {
+			line[--n] = '\0';
+		}
+		char *val = line;
+		while (*val == ' ' || *val == '\t') {
+			val++;
+		}
+		if (*val == '\0' || *val == '#') {
+			continue;
+		}
+		char *argv[] = { "sysctl", "-w", val, NULL };
+		pid_t pid;
+		int status = 0;
+		if (posix_spawn(&pid, "/usr/sbin/sysctl", NULL, NULL, argv, environ) != 0 ||
+		    waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+			launchd_syslog(LOG_ERR | LOG_CONSOLE, "pd_launchd_boot: sysctl -w %s failed", val);
+			failed++;
+		} else {
+			applied++;
+		}
+	}
+	fclose(sf);
+	launchd_syslog(LOG_NOTICE | LOG_CONSOLE, "pd_launchd_boot: %s: %u applied, %u failed",
+			file, applied, failed);
+}
+
 void
 pd_launchd_boot(void)
 {
@@ -310,4 +361,5 @@ pd_launchd_boot(void)
 	pd_launchd_boot_clean_tmp_dirs();
 	pd_launchd_boot_mkdir_p("/dev", 0755);
 	pd_launchd_boot_try_mount("devfs", "/dev", 0, NULL);
+	pd_launchd_boot_apply_sysctls("/etc/sysctl.conf");
 }

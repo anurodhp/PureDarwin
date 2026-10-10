@@ -1756,6 +1756,13 @@ require_jobs_from_cache(void)
 	bool cs_disabled = false;
 	len = sizeof(buf);
 
+	/* iokit port (DARW-241): this image ships no xpcd cache, and without one
+	 * the cache-only path made every launchctl load fail with "no plist was
+	 * returned". Read the file directly when there is no cache to read from. */
+	if (access(XPC_PLIST_CACHE, R_OK) != 0) {
+		return false;
+	}
+
 	if (sysctlbyname("kern.bootargs", buf, &len, NULL, 0) == 0) {
 		ptr = strnstr(buf, "cs_enforcement_disable=", len);
 		if (ptr != NULL) {

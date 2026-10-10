@@ -2254,7 +2254,10 @@ job_new(jobmgr_t jm, const char *label, const char *prog, const char *const *arg
 		j->psproctype = POSIX_SPAWN_PROC_TYPE_APP_DEFAULT;
 		j->app = true;
 	} else {
-		j->psproctype = POSIX_SPAWN_PROC_TYPE_DAEMON_BACKGROUND;
+		/* iokit port (DARW-336): Standard, not Background, as on OS X (see the
+		 * #else branch below). Background throttled every plist without a
+		 * ProcessType and delayed timers by up to 50 ms on the Pi 3. */
+		j->psproctype = POSIX_SPAWN_PROC_TYPE_DAEMON_STANDARD;
 		j->jetsam_memlimit = DEFAULT_JETSAM_DAEMON_HIGHWATERMARK;
 	}
 #else
@@ -4707,7 +4710,7 @@ job_start_child(job_t j)
 	int gflags = GLOB_NOSORT|GLOB_NOCHECK|GLOB_TILDE|GLOB_DOOFFS;
 	glob_t g;
 	short spflags = POSIX_SPAWN_SETEXEC;
-	int psproctype = POSIX_SPAWN_PROC_TYPE_DAEMON_BACKGROUND;
+	int psproctype = POSIX_SPAWN_PROC_TYPE_DAEMON_STANDARD;
 	size_t binpref_out_cnt = 0;
 	size_t i;
 

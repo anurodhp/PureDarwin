@@ -731,6 +731,10 @@ read_jetsam_defaults_from_file(void) {
 	CFDictionaryRef defaults = NULL;
 
 	dirp = opendir(JETSAM_PROP_DIR);
+	if (!dirp) {
+		/* iokit port (DARW-241): this image has no jetsam property dir; readdir(NULL) crashed. */
+		return NULL;
+	}
 	while ((dp = readdir(dirp)) != NULL) {
 		char *fullpath;
     
